@@ -26,11 +26,15 @@ downloader.run()
 CLI usage
 ---------
 python sentinel2_ndvi_download.py \\
-    --output_dir ./output/krycklan_2022 \\
+    --project ee-yourproject \\
+    --output_dir ./output/Site_2022 \\
     --start_date 2022-05-01 \\
     --end_date   2022-09-30 \\
-    --bbox 19.75 64.05 20.05 64.25   # xmin ymin xmax ymax (lon/lat WGS84)
-
+    --bbox 19.75 64.05 20.05 64.25
+    
+For composites, add:
+    --composite --period dekad
+    
 All cloud-masking parameters are optional and have sensible defaults.
 Run  python sentinel2_ndvi_download.py --help  for full usage.
 
@@ -445,6 +449,7 @@ if __name__ == "__main__":
     )
 
     # Required
+    parser.add_argument("--project",     required=True, help="GEE project ID (e.g. ee-yourname).")
     parser.add_argument("--output_dir",  required=True, help="Directory to write output TIFFs.")
     parser.add_argument("--start_date",  required=True, help="Start date (YYYY-MM-DD).")
     parser.add_argument("--end_date",    required=True, help="End date   (YYYY-MM-DD).")
@@ -471,6 +476,9 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
+    # Initialise GEE using the token already saved by ee.Authenticate()
+    ee.Initialize(project=args.project)
+    
     xmin, ymin, xmax, ymax = args.bbox
     aoi = ee.Geometry.Polygon(
         [[xmin, ymax], [xmax, ymax], [xmax, ymin], [xmin, ymin], [xmin, ymax]]
