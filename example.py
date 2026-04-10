@@ -31,7 +31,7 @@ downloader_composite = Sentinel2NDVIDownload(
     crs="EPSG:3006",
 )
 # Uncomment ONE of the lines below and comment out Option 1 above
-# downloader.run_composites(period="week")
+# downloader_composite.run_composites(period="week")
 downloader_composite.run_composites(period="dekad")
-# downloader.run_composites(period="biweekly")
-# downloader.run_composites(period="month")
+# downloader_composite.run_composites(period="biweekly")
+# downloader_composite.run_composites(period="month")
