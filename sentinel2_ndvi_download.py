@@ -1,5 +1,5 @@
 """
-sentinel2_ndvi_fetch.py
+sentinel2_ndvi_download.py
 -----------------------
 Fetches Sentinel-2 SR images for a given AOI and time range,
 applies cloud/shadow masking, computes NDVI, and saves individual
@@ -7,7 +7,7 @@ GeoTIFF files at 10 m resolution.
 
 Python API usage
 ----------------
-from sentinel2_ndvi_fetch import Sentinel2NDVIDownload
+from sentinel2_ndvi_download import Sentinel2NDVIDownload
 
 downloader = Sentinel2NDVIDownload(
     aoi=my_ee_geometry,
@@ -25,14 +25,14 @@ downloader.run()
 
 CLI usage
 ---------
-python sentinel2_ndvi_fetch.py \\
+python sentinel2_ndvi_download.py \\
     --output_dir ./output/krycklan_2022 \\
     --start_date 2022-05-01 \\
     --end_date   2022-09-30 \\
     --bbox 19.75 64.05 20.05 64.25   # xmin ymin xmax ymax (lon/lat WGS84)
 
 All cloud-masking parameters are optional and have sensible defaults.
-Run  python sentinel2_ndvi_fetch.py --help  for full usage.
+Run  python sentinel2_ndvi_download.py --help  for full usage.
 
 Dependencies (install in a fresh venv)
 ---------------------------------------
@@ -96,6 +96,12 @@ class Sentinel2NDVIDownload:
         Use 'EPSG:3006' for SWEREF99 TM (Swedish national standard).
         Avoid 'EPSG:4326' for metric work: pixel size in degrees makes
         the 10 m scale parameter meaningless.
+    period : str
+        Compositing period. One of:
+            'week'      — Monday to Sunday (ISO weeks)
+            'dekad'     — 1st–10th, 11th–20th, 21st–end of month
+            'biweekly'  — 1st–15th and 16th–end of month
+            'month'     — full calendar month
     """
 
     def __init__(
@@ -238,6 +244,105 @@ class Sentinel2NDVIDownload:
             .filter(ee.Filter.lt("nodata_percentage", self.nodata_thresh))
         )
 
+    # ── Date window generation ────────────────────────────────────────────────
+ 
+    def _generate_date_windows(self, period: str) -> list[tuple[str, str, str]]:
+        """
+        Generate a list of (label, window_start, window_end) tuples covering
+        the full [start_date, end_date] range for the chosen period.
+ 
+        Parameters
+        ----------
+        period : str
+            One of 'week', 'biweekly', or 'month'.
+ 
+        Returns
+        -------
+        list of (label, window_start, window_end)
+            Dates are strings in YYYY-MM-DD format.
+            window_end is exclusive (GEE filterDate convention).
+        """
+        from datetime import date, timedelta
+        import calendar
+ 
+        start = datetime.strptime(self.start_date, "%Y-%m-%d").date()
+        end   = datetime.strptime(self.end_date,   "%Y-%m-%d").date()
+        windows = []
+ 
+        if period == "week":
+            # Snap to the Monday of the week containing start_date
+            current = start - timedelta(days=start.weekday())
+            while current <= end:
+                w_start = current
+                w_end   = current + timedelta(days=7)   # exclusive
+                label   = f"{w_start.strftime('%Y-%m-%d')}_to_{(w_end - timedelta(days=1)).strftime('%Y-%m-%d')}"
+                windows.append((label, w_start.strftime("%Y-%m-%d"), w_end.strftime("%Y-%m-%d")))
+                current = w_end
+        
+        elif period == "dekad":
+            current = date(start.year, start.month, 1)
+            while current <= end:
+                last_day = calendar.monthrange(current.year, current.month)[1]
+                # First dekad: 1–10
+                w1_start = date(current.year, current.month, 1)
+                w1_end   = date(current.year, current.month, 11)   # exclusive
+                label1   = f"{w1_start.strftime('%Y-%m-%d')}_to_{date(current.year, current.month, 10).strftime('%Y-%m-%d')}"
+                windows.append((label1, w1_start.strftime("%Y-%m-%d"), w1_end.strftime("%Y-%m-%d")))
+                # Second dekad: 11–20
+                w2_start = date(current.year, current.month, 11)
+                w2_end   = date(current.year, current.month, 21)   # exclusive
+                label2   = f"{w2_start.strftime('%Y-%m-%d')}_to_{date(current.year, current.month, 20).strftime('%Y-%m-%d')}"
+                windows.append((label2, w2_start.strftime("%Y-%m-%d"), w2_end.strftime("%Y-%m-%d")))
+                # Third dekad: 21–end of month
+                w3_start = date(current.year, current.month, 21)
+                w3_end   = date(current.year, current.month, last_day) + timedelta(days=1)  # exclusive
+                label3   = f"{w3_start.strftime('%Y-%m-%d')}_to_{date(current.year, current.month, last_day).strftime('%Y-%m-%d')}"
+                windows.append((label3, w3_start.strftime("%Y-%m-%d"), w3_end.strftime("%Y-%m-%d")))
+                # Advance to next month
+                if current.month == 12:
+                    current = date(current.year + 1, 1, 1)
+                else:
+                    current = date(current.year, current.month + 1, 1)
+ 
+        elif period == "biweekly":
+            current = date(start.year, start.month, 1)
+            while current <= end:
+                last_day = calendar.monthrange(current.year, current.month)[1]
+                # First half: 1–15
+                w1_start = date(current.year, current.month, 1)
+                w1_end   = date(current.year, current.month, 16)   # exclusive
+                label1   = f"{w1_start.strftime('%Y-%m-%d')}_to_{ (w1_end - timedelta(days=1)).strftime('%Y-%m-%d')}"
+                windows.append((label1, w1_start.strftime("%Y-%m-%d"), w1_end.strftime("%Y-%m-%d")))
+                # Second half: 16–end
+                w2_start = date(current.year, current.month, 16)
+                w2_end   = date(current.year, current.month, last_day) + timedelta(days=1)  # exclusive
+                label2   = f"{w2_start.strftime('%Y-%m-%d')}_to_{date(current.year, current.month, last_day).strftime('%Y-%m-%d')}"
+                windows.append((label2, w2_start.strftime("%Y-%m-%d"), w2_end.strftime("%Y-%m-%d")))
+                # Advance to next month
+                if current.month == 12:
+                    current = date(current.year + 1, 1, 1)
+                else:
+                    current = date(current.year, current.month + 1, 1)
+ 
+        elif period == "month":
+            current = date(start.year, start.month, 1)
+            while current <= end:
+                last_day = calendar.monthrange(current.year, current.month)[1]
+                w_start  = current
+                w_end    = date(current.year, current.month, last_day) + timedelta(days=1)  # exclusive
+                label    = current.strftime("%Y-%m")
+                windows.append((label, w_start.strftime("%Y-%m-%d"), w_end.strftime("%Y-%m-%d")))
+                if current.month == 12:
+                    current = date(current.year + 1, 1, 1)
+                else:
+                    current = date(current.year, current.month + 1, 1)
+ 
+        else:
+            raise ValueError(f"period must be 'week', 'dekad', 'biweekly', or 'month'. Got: '{period}'")
+ 
+        return windows
+ 
+    
     def run(self) -> list[str]:
         """
         Execute the fetch-mask-save pipeline.
@@ -273,6 +378,60 @@ class Sentinel2NDVIDownload:
         print(f"\nDone. {len(saved_paths)} file(s) written to: {self.output_dir}")
         return saved_paths
 
+    def run_composites(self, period: str = "week") -> list[str]:
+        """
+        Download GEE-side median NDVI composites for each time window.
+        One file per period window within [start_date, end_date].
+        Windows with no cloud-free images are skipped.
+ 
+        Parameters
+        ----------
+        period : str
+            Compositing period. One of:
+                'week'      — Monday to Sunday (ISO weeks)
+                'dekad'     — 1st–10th, 11th–20th, 21st–end of month
+                'biweekly'  — 1st–15th and 16th–end of month
+                'month'     — full calendar month
+ 
+        Returns
+        -------
+        list[str]
+            Paths to all written composite GeoTIFFs.
+        """
+        col = self._build_collection()
+        windows = self._generate_date_windows(period)
+ 
+        composite_dir = os.path.join(self.output_dir, f"composites_{period}")
+        os.makedirs(composite_dir, exist_ok=True)
+ 
+        print(f"Generating {len(windows)} {period} composite window(s)...")
+        saved_paths: list[str] = []
+ 
+        for label, w_start, w_end in windows:
+            window_col = col.filterDate(w_start, w_end)
+            n = window_col.size().getInfo()
+ 
+            if n == 0:
+                print(f"  [{label}] No images — skipping.")
+                continue
+ 
+            print(f"  [{label}] {n} image(s) → computing median composite...")
+            composite = window_col.select("NDVI").median()
+ 
+            out_path = os.path.join(composite_dir, f"ndvi_{period}_{label}.tif")
+            geemap.ee_export_image(
+                composite,
+                filename=out_path,
+                scale=self.scale,
+                region=self.aoi,
+                crs=self.crs,
+                file_per_band=False,
+            )
+            saved_paths.append(out_path)
+ 
+        print(f"\nDone. {len(saved_paths)} composite(s) written to: {composite_dir}")
+        return saved_paths
+ 
 
 # ─────────────────────────────────────────────────────────────────────────────
 # CLI entry point
@@ -307,6 +466,8 @@ if __name__ == "__main__":
     parser.add_argument("--nodata_thresh",  type=float, default=80,   help="Max tolerated no-data percentage.")
     parser.add_argument("--scale",          type=int,   default=10,   help="Output pixel resolution (m).")
     parser.add_argument("--crs",            type=str,   default="EPSG:32633", help="Output CRS (e.g. EPSG:32633, EPSG:3006).")
+    parser.add_argument("--composite",      action="store_true",              help="Download composites instead of individual images.")
+    parser.add_argument("--period",         type=str,   default="week",       help="Compositing period: 'week', 'biweekly', 'dekad', or 'month'. Only used with --composite.")
 
     args = parser.parse_args()
 
@@ -329,4 +490,7 @@ if __name__ == "__main__":
         scale=args.scale,
         crs=args.crs,
     )
-    downloader.run()
+    if args.composite:
+        downloader.run_composites(period=args.period)
+    else:
+        downloader.run()
